@@ -3,9 +3,60 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Read-YesNo {
+    param(
+        [string]$Prompt,
+        [bool]$Default = $true
+    )
+
+    $suffix = if ($Default) { 'Y/n' } else { 'y/N' }
+
+    while ($true) {
+        $inputValue = Read-Host "$Prompt [$suffix]"
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            return $Default
+        }
+
+        switch ($inputValue.Trim().ToLowerInvariant()) {
+            'y' { return $true }
+            'yes' { return $true }
+            'n' { return $false }
+            'no' { return $false }
+        }
+
+        Write-Host 'Please enter yes or no.' -ForegroundColor Yellow
+    }
+}
+
+function Read-AudioRole {
+    param(
+        [string]$DefaultRole = 'Communications'
+    )
+
+    while ($true) {
+        $inputValue = Read-Host "Choose audio role [$DefaultRole] (Communications/Console/Multimedia)"
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            return $DefaultRole
+        }
+
+        switch ($inputValue.Trim().ToLowerInvariant()) {
+            'communications' { return 'Communications' }
+            'comm' { return 'Communications' }
+            'console' { return 'Console' }
+            'con' { return 'Console' }
+            'multimedia' { return 'Multimedia' }
+            'multi' { return 'Multimedia' }
+        }
+
+        Write-Host 'Please enter Communications, Console, or Multimedia.' -ForegroundColor Yellow
+    }
+}
+
 $base = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $base 'MicVolumeGuard.ps1'
 $iconPath = Join-Path $base 'microphone.ico'
+$defaultLogDir = Join-Path $env:LocalAppData 'MicVolumeGuard'
+$defaultLogPath = Join-Path $defaultLogDir 'MicVolumeGuard.log'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "MicVolumeGuard.ps1 not found in: $base"
@@ -82,11 +133,11 @@ public static class MicVolInstallHelper
         int GetVolumeRange(out float pflVolumeMindB, out float pflVolumeMaxdB, out float pflVolumeIncrementdB);
     }
 
-    public static int GetMicPercent()
+    public static int GetMicPercent(ERole role)
     {
         var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
         IMMDevice device;
-        Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(EDataFlow.eCapture, ERole.eCommunications, out device));
+        Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(EDataFlow.eCapture, role, out device));
 
         object endpointObj;
         Guid iid = typeof(IAudioEndpointVolume).GUID;
@@ -111,7 +162,14 @@ public static class MicVolInstallHelper
 "@
 }
 
-$defaultPercent = [MicVolInstallHelper]::GetMicPercent()
+$roleMap = @{
+    Console        = [MicVolInstallHelper+ERole]::eConsole
+    Multimedia     = [MicVolInstallHelper+ERole]::eMultimedia
+    Communications = [MicVolInstallHelper+ERole]::eCommunications
+}
+
+$selectedRole = Read-AudioRole -DefaultRole 'Communications'
+$defaultPercent = [MicVolInstallHelper]::GetMicPercent($roleMap[$selectedRole])
 if ($defaultPercent -lt 0 -or $defaultPercent -gt 100) {
     $defaultPercent = 100
 }
@@ -132,16 +190,34 @@ while ($true) {
     Write-Host 'Please enter a whole number from 0 to 100.' -ForegroundColor Yellow
 }
 
+$autoStartAtLogOn = Read-YesNo -Prompt 'Start automatically at logon?' -Default $true
+
 $taskName = 'MicVolumeGuard'
-$taskDescription = "Keeps mic volume fixed at $targetPercent% against AGC changes."
-$taskArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -TargetPercent $targetPercent -PollMs 1000 -TolerancePercent 1 -Role Communications -ProcessPriority High"
+$taskDescription = "Keeps $selectedRole mic volume fixed at $targetPercent% against AGC changes."
+$taskArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -TargetPercent $targetPercent -PollMs 1000 -TolerancePercent 1 -Role $selectedRole -ProcessPriority High -LogPath `"$defaultLogPath`""
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $taskArgs
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+$trigger = $null
+if ($autoStartAtLogOn) {
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+}
 
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -Principal $principal -Description $taskDescription | Out-Null
+$registerTaskSplat = @{
+    TaskName    = $taskName
+    Action      = $action
+    Settings    = $settings
+    Principal   = $principal
+    Description = $taskDescription
+}
+if ($null -ne $trigger) {
+    $registerTaskSplat.Trigger = $trigger
+}
+Register-ScheduledTask @registerTaskSplat | Out-Null
+
+New-Item -ItemType Directory -Path $defaultLogDir -Force | Out-Null
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $wsh = New-Object -ComObject WScript.Shell
@@ -168,8 +244,13 @@ $stopShortcut.Save()
 
 Start-ScheduledTask -TaskName $taskName
 
+$autoStartLabel = if ($autoStartAtLogOn) { 'Enabled at logon' } else { 'Manual start only' }
+
 Write-Host ''
 Write-Host "Installed successfully. Target mic volume: $targetPercent%" -ForegroundColor Green
+Write-Host "Audio role: $selectedRole" -ForegroundColor Green
+Write-Host "Auto-start: $autoStartLabel" -ForegroundColor Green
+Write-Host "Log file: $defaultLogPath" -ForegroundColor Green
 Write-Host 'Desktop shortcuts created:' -ForegroundColor Green
 Write-Host '  Start Mic Volume Guard'
 Write-Host '  Stop Mic Volume Guard'

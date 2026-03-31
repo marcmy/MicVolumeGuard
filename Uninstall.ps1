@@ -4,6 +4,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $taskName = 'MicVolumeGuard'
+$logDir = Join-Path $env:LocalAppData 'MicVolumeGuard'
+$logPath = Join-Path $logDir 'MicVolumeGuard.log'
 
 try {
     Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -27,5 +29,13 @@ catch {
 }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-Remove-Item (Join-Path $desktop 'Start Mic Volume Guard.lnk') -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $desktop 'Stop Mic Volume Guard.lnk') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $desktop 'Start Mic Volume Guard.lnk') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $desktop 'Stop Mic Volume Guard.lnk') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+
+if (Test-Path -LiteralPath $logDir) {
+    $remainingItems = Get-ChildItem -LiteralPath $logDir -Force -ErrorAction SilentlyContinue
+    if (-not $remainingItems) {
+        Remove-Item -LiteralPath $logDir -Force -ErrorAction SilentlyContinue
+    }
+}

@@ -16,11 +16,37 @@ param(
     [switch]$AlsoRestoreMute,
 
     [ValidateSet('Normal', 'AboveNormal', 'High')]
-    [string]$ProcessPriority = 'High'
+    [string]$ProcessPriority = 'High',
+
+    [string]$LogPath = (Join-Path (Join-Path $env:LocalAppData 'MicVolumeGuard') 'MicVolumeGuard.log')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Write-GuardLog {
+    param(
+        [string]$Message,
+        [ValidateSet('INFO', 'WARN', 'ERROR')]
+        [string]$Level = 'INFO'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogPath)) {
+        return
+    }
+
+    try {
+        $logDirectory = Split-Path -Parent $LogPath
+        if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {
+            New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+        }
+
+        $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        Add-Content -LiteralPath $LogPath -Value "[$timestamp] [$Level] $Message"
+    }
+    catch {
+    }
+}
 
 try {
     $currentProcess = Get-Process -Id $PID -ErrorAction Stop
@@ -29,7 +55,10 @@ try {
         'AboveNormal' { $currentProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal }
         'High'        { $currentProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High }
     }
-} catch {}
+}
+catch {
+    Write-GuardLog "Unable to set process priority to $ProcessPriority." 'WARN'
+}
 
 $mutexName = 'Local\MicVolumeGuard_Global'
 $createdNew = $false
@@ -244,11 +273,14 @@ public static class CoreAudioMicGuard
 
     if ($null -eq $TargetPercent) {
         $targetScalar = [double][CoreAudioMicGuard]::GetDefaultCaptureVolumeScalar($roleEnum)
-    } else {
+        $targetPercentLabel = [int][math]::Round($targetScalar * 100.0)
+    }
+    else {
         if ($TargetPercent -lt 0 -or $TargetPercent -gt 100) {
             throw 'TargetPercent must be between 0 and 100.'
         }
         $targetScalar = [double]$TargetPercent / 100.0
+        $targetPercentLabel = $TargetPercent
     }
 
     $targetMute = $false
@@ -257,6 +289,10 @@ public static class CoreAudioMicGuard
     }
 
     $toleranceScalar = [double]$TolerancePercent / 100.0
+    $lastLoopErrorMessage = $null
+    $lastLoopErrorAt = [datetime]::MinValue
+
+    Write-GuardLog "Starting MicVolumeGuard. TargetPercent=$targetPercentLabel Role=$Role PollMs=$PollMs TolerancePercent=$TolerancePercent RestoreAnyChange=$($RestoreAnyChange.IsPresent) AlsoRestoreMute=$($AlsoRestoreMute.IsPresent)" 'INFO'
 
     while ($true) {
         try {
@@ -269,7 +305,8 @@ public static class CoreAudioMicGuard
                 if ($delta -gt $toleranceScalar) {
                     $needsRestore = $true
                 }
-            } else {
+            }
+            else {
                 if ($currentScalar -lt ($targetScalar - $toleranceScalar)) {
                     $needsRestore = $true
                 }
@@ -285,10 +322,38 @@ public static class CoreAudioMicGuard
                     [CoreAudioMicGuard]::SetDefaultCaptureMute($roleEnum, $targetMute)
                 }
             }
-        } catch {}
+
+            if ($null -ne $lastLoopErrorMessage) {
+                Write-GuardLog 'Capture device access recovered.' 'INFO'
+                $lastLoopErrorMessage = $null
+                $lastLoopErrorAt = [datetime]::MinValue
+            }
+        }
+        catch {
+            $loopErrorMessage = $_.Exception.Message
+            if ([string]::IsNullOrWhiteSpace($loopErrorMessage)) {
+                $loopErrorMessage = $_.Exception.GetType().FullName
+            }
+
+            $now = Get-Date
+            if ($loopErrorMessage -ne $lastLoopErrorMessage -or ($now - $lastLoopErrorAt).TotalMinutes -ge 5) {
+                Write-GuardLog "Loop error: $loopErrorMessage" 'WARN'
+                $lastLoopErrorMessage = $loopErrorMessage
+                $lastLoopErrorAt = $now
+            }
+        }
 
         Start-Sleep -Milliseconds $PollMs
     }
+}
+catch {
+    $fatalMessage = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($fatalMessage)) {
+        $fatalMessage = $_.Exception.GetType().FullName
+    }
+
+    Write-GuardLog "Fatal error: $fatalMessage" 'ERROR'
+    throw
 }
 finally {
     if ($null -ne $script:Mutex) {
