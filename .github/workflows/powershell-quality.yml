@@ -1,0 +1,122 @@
+name: PowerShell Quality
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.ps1"
+      - "**/*.psm1"
+      - "**/*.psd1"
+      - ".github/workflows/powershell-quality.yml"
+  pull_request:
+    paths:
+      - "**/*.ps1"
+      - "**/*.psm1"
+      - "**/*.psd1"
+      - ".github/workflows/powershell-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: powershell-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify PowerShell syntax
+        shell: pwsh
+        run: |
+          $failures = [System.Collections.Generic.List[string]]::new()
+          $files = Get-ChildItem -Path . -Recurse -File | Where-Object {
+            $_.Extension -in '.ps1', '.psm1', '.psd1'
+          }
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            foreach ($parseError in $errors) {
+              $failures.Add("$($file.FullName):$($parseError.Extent.StartLineNumber): $($parseError.Message)")
+            }
+          }
+
+          if ($failures.Count -gt 0) {
+            $failures | ForEach-Object { Write-Error $_ }
+            throw "PowerShell syntax validation failed with $($failures.Count) error(s)."
+          }
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Repository PSGallery -Force
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = @(Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning)
+
+          # These are reviewed, intentional exceptions in the current scripts:
+          # - Install.ps1 uses Write-Host for interactive/colorized installer UX.
+          # - LogPath is consumed by Write-GuardLog through the parent script scope;
+          #   PSReviewUnusedParameter does not account for that dynamic lookup.
+          # - The listed empty catches intentionally suppress failures while writing
+          #   the log, releasing the mutex, or performing best-effort uninstall cleanup.
+          # Exact file/line/rule keys keep new analyzer findings fail-closed.
+          $reviewedExceptions = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+          )
+          @(
+            'Install.ps1:27:PSAvoidUsingWriteHost',
+            'Install.ps1:51:PSAvoidUsingWriteHost',
+            'Install.ps1:190:PSAvoidUsingWriteHost',
+            'Install.ps1:249:PSAvoidUsingWriteHost',
+            'Install.ps1:250:PSAvoidUsingWriteHost',
+            'Install.ps1:251:PSAvoidUsingWriteHost',
+            'Install.ps1:252:PSAvoidUsingWriteHost',
+            'Install.ps1:253:PSAvoidUsingWriteHost',
+            'Install.ps1:254:PSAvoidUsingWriteHost',
+            'Install.ps1:255:PSAvoidUsingWriteHost',
+            'Install.ps1:256:PSAvoidUsingWriteHost',
+            'Install.ps1:257:PSAvoidUsingWriteHost',
+            'MicVolumeGuard.ps1:21:PSReviewUnusedParameter',
+            'MicVolumeGuard.ps1:47:PSAvoidUsingEmptyCatchBlock',
+            'MicVolumeGuard.ps1:360:PSAvoidUsingEmptyCatchBlock',
+            'MicVolumeGuard.ps1:361:PSAvoidUsingEmptyCatchBlock',
+            'Uninstall.ps1:13:PSAvoidUsingEmptyCatchBlock',
+            'Uninstall.ps1:28:PSAvoidUsingEmptyCatchBlock'
+          ) | ForEach-Object { [void]$reviewedExceptions.Add($_) }
+
+          $actionable = @($results | Where-Object {
+            $key = "$($_.ScriptName):$($_.Line):$($_.RuleName)"
+            -not $reviewedExceptions.Contains($key)
+          })
+
+          if ($results.Count -gt 0) {
+            $results |
+              Sort-Object ScriptName, Line, RuleName |
+              Format-Table ScriptName, Line, Severity, RuleName, Message -AutoSize |
+              Out-String -Width 240 |
+              Write-Host
+          }
+
+          if ($actionable.Count -gt 0) {
+            throw "PSScriptAnalyzer reported $($actionable.Count) new or unreviewed finding(s)."
+          }
+
+          Write-Host "PSScriptAnalyzer passed; $($results.Count) reviewed finding(s) matched the explicit baseline."
