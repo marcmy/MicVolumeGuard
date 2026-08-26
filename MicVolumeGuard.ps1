@@ -21,7 +21,9 @@ param(
     [ValidateSet('Normal', 'AboveNormal', 'High')]
     [string]$ProcessPriority = 'High',
 
-    [string]$LogPath = (Join-Path (Join-Path $env:LocalAppData 'MicVolumeGuard') 'MicVolumeGuard.log')
+    [string]$LogPath = (Join-Path (Join-Path $env:LocalAppData 'MicVolumeGuard') 'MicVolumeGuard.log'),
+
+    [switch]$CompileOnly
 )
 
 Set-StrictMode -Version Latest
@@ -293,6 +295,10 @@ public static class CoreAudioMicGuard
     }
 }
 "@
+    }
+
+    if ($CompileOnly) {
+        return
     }
 
     $consoleRole = [CoreAudioMicGuard+ERole]::eConsole
