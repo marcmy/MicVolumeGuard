@@ -62,6 +62,10 @@ jobs:
             throw "PowerShell syntax validation failed with $($failures.Count) error(s)."
           }
 
+      - name: Compile Core Audio interop
+        shell: powershell
+        run: .\MicVolumeGuard.ps1 -CompileOnly
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Repository PSGallery -Force
