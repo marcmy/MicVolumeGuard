@@ -28,30 +28,6 @@ function Read-YesNo {
     }
 }
 
-function Read-AudioRole {
-    param(
-        [string]$DefaultRole = 'Communications'
-    )
-
-    while ($true) {
-        $inputValue = Read-Host "Choose audio role [$DefaultRole] (Communications/Console/Multimedia)"
-        if ([string]::IsNullOrWhiteSpace($inputValue)) {
-            return $DefaultRole
-        }
-
-        switch ($inputValue.Trim().ToLowerInvariant()) {
-            'communications' { return 'Communications' }
-            'comm' { return 'Communications' }
-            'console' { return 'Console' }
-            'con' { return 'Console' }
-            'multimedia' { return 'Multimedia' }
-            'multi' { return 'Multimedia' }
-        }
-
-        Write-Host 'Please enter Communications, Console, or Multimedia.' -ForegroundColor Yellow
-    }
-}
-
 $base = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $base 'MicVolumeGuard.ps1'
 $iconPath = Join-Path $base 'microphone.ico'
@@ -133,22 +109,23 @@ public static class MicVolInstallHelper
         int GetVolumeRange(out float pflVolumeMindB, out float pflVolumeMaxdB, out float pflVolumeIncrementdB);
     }
 
-    public static int GetMicPercent(ERole role)
+    public static int GetDefaultMicPercent()
     {
         var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
-        IMMDevice device;
-        Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(EDataFlow.eCapture, role, out device));
-
-        object endpointObj;
-        Guid iid = typeof(IAudioEndpointVolume).GUID;
-        Marshal.ThrowExceptionForHR(device.Activate(ref iid, CLSCTX.ALL, IntPtr.Zero, out endpointObj));
-        var endpoint = (IAudioEndpointVolume)endpointObj;
-
-        float level;
-        Marshal.ThrowExceptionForHR(endpoint.GetMasterVolumeLevelScalar(out level));
+        IMMDevice device = null;
+        IAudioEndpointVolume endpoint = null;
 
         try
         {
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(EDataFlow.eCapture, ERole.eConsole, out device));
+
+            object endpointObj;
+            Guid iid = typeof(IAudioEndpointVolume).GUID;
+            Marshal.ThrowExceptionForHR(device.Activate(ref iid, CLSCTX.ALL, IntPtr.Zero, out endpointObj));
+            endpoint = (IAudioEndpointVolume)endpointObj;
+
+            float level;
+            Marshal.ThrowExceptionForHR(endpoint.GetMasterVolumeLevelScalar(out level));
             return (int)Math.Round(level * 100.0f);
         }
         finally
@@ -162,14 +139,7 @@ public static class MicVolInstallHelper
 "@
 }
 
-$roleMap = @{
-    Console        = [MicVolInstallHelper+ERole]::eConsole
-    Multimedia     = [MicVolInstallHelper+ERole]::eMultimedia
-    Communications = [MicVolInstallHelper+ERole]::eCommunications
-}
-
-$selectedRole = Read-AudioRole -DefaultRole 'Communications'
-$defaultPercent = [MicVolInstallHelper]::GetMicPercent($roleMap[$selectedRole])
+$defaultPercent = [MicVolInstallHelper]::GetDefaultMicPercent()
 if ($defaultPercent -lt 0 -or $defaultPercent -gt 100) {
     $defaultPercent = 100
 }
@@ -193,8 +163,8 @@ while ($true) {
 $autoStartAtLogOn = Read-YesNo -Prompt 'Start automatically at logon?' -Default $true
 
 $taskName = 'MicVolumeGuard'
-$taskDescription = "Keeps $selectedRole mic volume fixed at $targetPercent% against AGC changes."
-$taskArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -TargetPercent $targetPercent -PollMs 1000 -TolerancePercent 1 -Role $selectedRole -ProcessPriority High -LogPath `"$defaultLogPath`""
+$taskDescription = "Keeps the current default and default communications microphone volumes fixed at $targetPercent% against AGC changes."
+$taskArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -TargetPercent $targetPercent -PollMs 1000 -TolerancePercent 1 -ProcessPriority High -LogPath `"$defaultLogPath`""
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $taskArgs
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
@@ -204,7 +174,9 @@ if ($autoStartAtLogOn) {
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 }
 
+Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
 $registerTaskSplat = @{
     TaskName    = $taskName
     Action      = $action
@@ -227,7 +199,8 @@ $startShortcut.TargetPath = "$env:SystemRoot\System32\schtasks.exe"
 $startShortcut.Arguments = '/Run /TN "MicVolumeGuard"'
 if (Test-Path -LiteralPath $iconPath) {
     $startShortcut.IconLocation = "$iconPath,0"
-} else {
+}
+else {
     $startShortcut.IconLocation = "$env:SystemRoot\System32\SndVol.exe,0"
 }
 $startShortcut.Save()
@@ -237,7 +210,8 @@ $stopShortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powe
 $stopShortcut.Arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Stop-ScheduledTask -TaskName ''MicVolumeGuard'' -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process | Where-Object { $_.Name -match ''^(powershell|pwsh)\.exe$'' -and $_.CommandLine -match ''MicVolumeGuard\.ps1'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"'
 if (Test-Path -LiteralPath $iconPath) {
     $stopShortcut.IconLocation = "$iconPath,0"
-} else {
+}
+else {
     $stopShortcut.IconLocation = "$env:SystemRoot\System32\SndVol.exe,0"
 }
 $stopShortcut.Save()
@@ -248,7 +222,7 @@ $autoStartLabel = if ($autoStartAtLogOn) { 'Enabled at logon' } else { 'Manual s
 
 Write-Host ''
 Write-Host "Installed successfully. Target mic volume: $targetPercent%" -ForegroundColor Green
-Write-Host "Audio role: $selectedRole" -ForegroundColor Green
+Write-Host 'Guarding: current Default Device + current Default Communications Device' -ForegroundColor Green
 Write-Host "Auto-start: $autoStartLabel" -ForegroundColor Green
 Write-Host "Log file: $defaultLogPath" -ForegroundColor Green
 Write-Host 'Desktop shortcuts created:' -ForegroundColor Green
