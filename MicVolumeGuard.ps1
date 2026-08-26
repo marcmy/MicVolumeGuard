@@ -26,6 +26,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:GuardLogPath = $LogPath
 
 function Write-GuardLog {
     param(
@@ -34,20 +35,21 @@ function Write-GuardLog {
         [string]$Level = 'INFO'
     )
 
-    if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    if ([string]::IsNullOrWhiteSpace($script:GuardLogPath)) {
         return
     }
 
     try {
-        $logDirectory = Split-Path -Parent $LogPath
+        $logDirectory = Split-Path -Parent $script:GuardLogPath
         if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {
             New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
         }
 
         $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-        Add-Content -LiteralPath $LogPath -Value "[$timestamp] [$Level] $Message"
+        Add-Content -LiteralPath $script:GuardLogPath -Value "[$timestamp] [$Level] $Message"
     }
     catch {
+        return
     }
 }
 
@@ -316,7 +318,7 @@ public static class CoreAudioMicGuard
     $lastCommunicationsDeviceId = $null
     $targetMuteByDevice = @{}
 
-    Write-GuardLog "Starting MicVolumeGuard. TargetPercent=$targetPercentLabel FollowDefault=True FollowCommunications=True PollMs=$PollMs TolerancePercent=$TolerancePercent RestoreAnyChange=$($RestoreAnyChange.IsPresent) AlsoRestoreMute=$($AlsoRestoreMute.IsPresent)" 'INFO'
+    Write-GuardLog "Starting MicVolumeGuard. TargetPercent=$targetPercentLabel FollowDefault=True FollowCommunications=True LegacyRole=$Role PollMs=$PollMs TolerancePercent=$TolerancePercent RestoreAnyChange=$($RestoreAnyChange.IsPresent) AlsoRestoreMute=$($AlsoRestoreMute.IsPresent)" 'INFO'
 
     while ($true) {
         try {
@@ -393,7 +395,7 @@ catch {
 }
 finally {
     if ($null -ne $script:Mutex) {
-        try { $script:Mutex.ReleaseMutex() } catch {}
-        try { $script:Mutex.Dispose() } catch {}
+        try { $script:Mutex.ReleaseMutex() } catch { $null = $_ }
+        try { $script:Mutex.Dispose() } catch { $null = $_ }
     }
 }
