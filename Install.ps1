@@ -5,6 +5,13 @@
     '',
     Justification = 'Interactive installer intentionally uses colorized console output.'
 )]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    'PSAvoidUsingWriteHost',
+    '',
+    Scope = 'Function',
+    Target = '*',
+    Justification = 'Interactive installer functions intentionally use colorized console output.'
+)]
 param()
 
 Set-StrictMode -Version Latest
