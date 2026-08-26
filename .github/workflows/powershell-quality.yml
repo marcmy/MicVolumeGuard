@@ -62,6 +62,10 @@ jobs:
             throw "PowerShell syntax validation failed with $($failures.Count) error(s)."
           }
 
+      - name: Compile Core Audio interop
+        shell: powershell
+        run: .\MicVolumeGuard.ps1 -CompileOnly
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Repository PSGallery -Force
@@ -71,33 +75,12 @@ jobs:
         run: |
           $results = @(Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning)
 
-          # These are reviewed, intentional exceptions in the current scripts:
-          # - Install.ps1 uses Write-Host for interactive/colorized installer UX.
-          # - LogPath is consumed by Write-GuardLog through the parent script scope;
-          #   PSReviewUnusedParameter does not account for that dynamic lookup.
-          # - The listed empty catches intentionally suppress failures while writing
-          #   the log, releasing the mutex, or performing best-effort uninstall cleanup.
+          # These are reviewed, intentional exceptions in the current scripts.
           # Exact file/line/rule keys keep new analyzer findings fail-closed.
           $reviewedExceptions = [System.Collections.Generic.HashSet[string]]::new(
             [System.StringComparer]::OrdinalIgnoreCase
           )
           @(
-            'Install.ps1:27:PSAvoidUsingWriteHost',
-            'Install.ps1:51:PSAvoidUsingWriteHost',
-            'Install.ps1:190:PSAvoidUsingWriteHost',
-            'Install.ps1:249:PSAvoidUsingWriteHost',
-            'Install.ps1:250:PSAvoidUsingWriteHost',
-            'Install.ps1:251:PSAvoidUsingWriteHost',
-            'Install.ps1:252:PSAvoidUsingWriteHost',
-            'Install.ps1:253:PSAvoidUsingWriteHost',
-            'Install.ps1:254:PSAvoidUsingWriteHost',
-            'Install.ps1:255:PSAvoidUsingWriteHost',
-            'Install.ps1:256:PSAvoidUsingWriteHost',
-            'Install.ps1:257:PSAvoidUsingWriteHost',
-            'MicVolumeGuard.ps1:21:PSReviewUnusedParameter',
-            'MicVolumeGuard.ps1:47:PSAvoidUsingEmptyCatchBlock',
-            'MicVolumeGuard.ps1:360:PSAvoidUsingEmptyCatchBlock',
-            'MicVolumeGuard.ps1:361:PSAvoidUsingEmptyCatchBlock',
             'Uninstall.ps1:13:PSAvoidUsingEmptyCatchBlock',
             'Uninstall.ps1:28:PSAvoidUsingEmptyCatchBlock'
           ) | ForEach-Object { [void]$reviewedExceptions.Add($_) }
